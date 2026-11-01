@@ -197,16 +197,35 @@ def calculate_results(
         .astype(float)
     )
 
-    order_summary = (
-        reconciliation.groupby("amazon-order-id", as_index=False)
-        .agg(
-            Net_Payout=("Net_Payout", "first"),
-            is_returned=("is_returned", "max"),
-            Item_Lines=("sku", "size"),
-            Returned_Item_Lines=("is_returned", "sum"),
-            Total_Quantity=("quantity", "sum"),
-            Total_COGS=("COGS", "sum"),
+    order_summary_rows: list[dict[str, Any]] = []
+    for order_id, group in reconciliation.groupby("amazon-order-id", sort=True):
+        quantity_format = " + ".join(
+            group["quantity"].astype(int).astype(str).tolist()
         )
+        cost_price_breakdown = " + ".join(
+            f"{int(row.quantity)} * {row.Unit_Cost:.1f}"
+            for row in group.itertuples(index=False)
+        )
+        order_summary_rows.append(
+            {
+                "amazon-order-id": order_id,
+                "Net_Payout": group["Net_Payout"].iloc[0],
+                "is_returned": int(group["is_returned"].max()),
+                "quantity_format": quantity_format,
+                "cost_price_breakdown": cost_price_breakdown,
+                "Total_COGS": group["COGS"].sum(),
+            }
+        )
+    order_summary = pd.DataFrame(
+        order_summary_rows,
+        columns=[
+            "amazon-order-id",
+            "Net_Payout",
+            "is_returned",
+            "quantity_format",
+            "cost_price_breakdown",
+            "Total_COGS",
+        ],
     )
 
     total_net_payout = float(order_summary["Net_Payout"].sum())
@@ -261,17 +280,10 @@ def calculate_results(
     )
 
 
-def _make_excel_download(
-    reconciliation: pd.DataFrame, order_summary: pd.DataFrame, summary: dict[str, Any]
-) -> bytes:
+def _make_excel_download(dataframe: pd.DataFrame, sheet_name: str) -> bytes:
     output = BytesIO()
-    summary_table = pd.DataFrame(
-        [{"Metric": key, "Value": value} for key, value in summary.items()]
-    )
     with pd.ExcelWriter(output, engine="openpyxl") as writer:
-        summary_table.to_excel(writer, sheet_name="Profit Summary", index=False)
-        reconciliation.to_excel(writer, sheet_name="Item Details", index=False)
-        order_summary.to_excel(writer, sheet_name="Order Summary", index=False)
+        dataframe.to_excel(writer, sheet_name=sheet_name, index=False)
     return output.getvalue()
 
 
@@ -423,13 +435,21 @@ def main() -> None:
     with order_tab:
         st.dataframe(order_summary, hide_index=True, use_container_width=True)
 
-    workbook = _make_excel_download(reconciliation, order_summary, summary)
-    st.download_button(
-        "Download results as Excel",
-        data=workbook,
-        file_name="amazon_profit_reconciliation.xlsx",
-        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-    )
+    download_columns = st.columns(2)
+    with download_columns[0]:
+        st.download_button(
+            "Download item reconciliation",
+            data=_make_excel_download(reconciliation, "Reconciliation"),
+            file_name="final_reconciliation.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        )
+    with download_columns[1]:
+        st.download_button(
+            "Download unique-order summary",
+            data=_make_excel_download(order_summary, "Unique Orders"),
+            file_name="final_reconciliation_unique.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        )
 
 
 if __name__ == "__main__":
